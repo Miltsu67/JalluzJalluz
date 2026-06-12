@@ -1,0 +1,38 @@
+<config>
+    <database>
+	<!-- Serverin osoite -->
+        <server>localhost\SQLEXPRESS</server>
+
+	<!-- Databasen nimi -->
+        <database_name>formatiadatabase</database_name>
+
+	<!-- Taulukon nimi -->
+	<table_name>dbo.Games</table_name>
+
+        <!-- Profiilitaulukon nimi -->
+	<profile_table_name>dbo.PlayerProfiles</profile_table_name>
+
+	<!-- Perustaulukon sarakkeet -->
+	<default_table_columns>winner1,winner2,loser1,loser2,game_time,game_date,under_table,winner_side,drink1,drink2,drink3,drink4,comment</default_table_columns>
+
+	<!-- Luotettu yhteys, ei tarvitse muuttaa -->
+        <trusted_connection>yes</trusted_connection>
+
+    </database>
+
+    <paths>
+	<!-- Ohjelmakuvakkeen polku -->
+        <icon>C:\Users\miroh\Music\JalluzJalluz 2_0_7\JalluzJalluzIcon.png</icon>
+
+	<!-- Pelimusiikin polku -->
+        <game_music>C:\Users\miroh\Music\JalluzJalluz 2_0_7\Pelimusiikki.mp3</game_music>
+
+	<!-- Välimusiikin polku -->
+        <interlude_music>C:\Users\miroh\Music\JalluzJalluz 2_0_7\Valimusiikki.mp3</interlude_music>
+
+	<rank_olvi>C:\Users\miroh\Music\JalluzJalluz 2_0_7\olvi_rank.png</rank_olvi>
+	<rank_pirkka>C:\Users\miroh\Music\JalluzJalluz 2_0_7\pirkka_rank.png</rank_pirkka>
+	<rank_coop>C:\Users\miroh\Music\JalluzJalluz 2_0_7\coop_rank.png</rank_coop>
+	<rank_sandels>C:\Users\miroh\Music\JalluzJalluz 2_0_7\sandels_rank.png</rank_sandels>
+    </paths>
+</config>

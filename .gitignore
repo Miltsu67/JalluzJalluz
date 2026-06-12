@@ -1,0 +1,8 @@
+build/
+dist/
+SQL/
+__pycache__/
+¨
+JalluzJalluz.spec
+.env
+
