@@ -25,14 +25,14 @@
         <icon>C:\Users\miroh\Music\JalluzJalluz 2_0_7\JalluzJalluzIcon.png</icon>
 
 	<!-- Pelimusiikin polku -->
-        <game_music>C:\Users\miroh\Music\JalluzJalluz 2_0_7\Pelimusiikki.mp3</game_music>
+        <game_music>C:\Users\miroh\Music\JalluzJalluz 2_0_7\music\Pelimusiikki.mp3</game_music>
 
 	<!-- Välimusiikin polku -->
-        <interlude_music>C:\Users\miroh\Music\JalluzJalluz 2_0_7\Valimusiikki.mp3</interlude_music>
+        <interlude_music>C:\Users\miroh\Music\JalluzJalluz 2_0_7\music\Valimusiikki.mp3</interlude_music>
 
-	<rank_olvi>C:\Users\miroh\Music\JalluzJalluz 2_0_7\olvi_rank.png</rank_olvi>
-	<rank_pirkka>C:\Users\miroh\Music\JalluzJalluz 2_0_7\pirkka_rank.png</rank_pirkka>
-	<rank_coop>C:\Users\miroh\Music\JalluzJalluz 2_0_7\coop_rank.png</rank_coop>
-	<rank_sandels>C:\Users\miroh\Music\JalluzJalluz 2_0_7\sandels_rank.png</rank_sandels>
+	<rank_olvi>C:\Users\miroh\Music\JalluzJalluz 2_0_7\ranks\olvi_rank.png</rank_olvi>
+	<rank_pirkka>C:\Users\miroh\Music\JalluzJalluz 2_0_7\ranks\pirkka_rank.png</rank_pirkka>
+	<rank_coop>C:\Users\miroh\Music\JalluzJalluz 2_0_7\ranks\coop_rank.png</rank_coop>
+	<rank_sandels>C:\Users\miroh\Music\JalluzJalluz 2_0_7\ranks\sandels_rank.png</rank_sandels>
     </paths>
 </config>
