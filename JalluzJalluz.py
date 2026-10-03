@@ -1,4 +1,4 @@
-"""JalluzJalluz 2_0_7
+"""JalluzJalluz 2_0_8
 Miro Haltia
 miro.haltia@tuni.fi
 miro.haltia.mh@gmail.com
@@ -38,6 +38,7 @@ import os
 import platform
 import numpy as np
 from dotenv import load_dotenv
+import keyboard
 
 if getattr(sys, 'frozen', False):
     # If the application is frozen (e.g., bundled by PyInstaller)
@@ -280,7 +281,9 @@ class DatabaseWorker(QRunnable):
         except Exception as e:
             self.signals.error.emit(str(e))
 
-
+class HotkeySignal(QObject):
+    """Signaali, jolla keyboard-kirjaston taustasäie keskustelee PySide6:n kanssa turvallisesti."""
+    pressed = Signal()
 
 class Latausikkuna(QWidget):
     """Photoshop-tyylinen latausikkuna, joka näytetään ohjelman käynnistyessä."""
@@ -355,7 +358,7 @@ class AjanottoGUI(QWidget):
         """Luodaan aloitusikkuna"""
 
         super().__init__()
-        self.setWindowTitle("JalluzJalluz 2.0.7")
+        self.setWindowTitle("JalluzJalluz 2.0.8")
 
         # Ikkunan leveys ja korkeus
         self.resize(330, 600)
@@ -664,6 +667,11 @@ class AjanottoGUI(QWidget):
 
         self.expert_checkbox.setChecked(True)
 
+        # Alustetaan globaali pikanäppäin (F13)
+        self.hotkey_signal = HotkeySignal()
+        self.hotkey_signal.pressed.connect(self.start_stop_peli)
+        keyboard.add_hotkey('f13', self.hotkey_signal.pressed.emit)
+
     def toggle_expert(self, state):
         """Näytetään tai piilotetaan juomapudotusvalikot + todennäköisyysnappi/label"""
         on = (state == 2)
@@ -855,6 +863,26 @@ class AjanottoGUI(QWidget):
         self.tarkista_voiko_tallentaa()
         self.btn_kuppi_nurin.setEnabled(False)
         self.btn_continue.setEnabled(False)
+
+    def start_stop_peli(self):
+        """Käsittelee yhden napin logiikan: Start, Stop ja Continue (TÖHÖ)."""
+        # Jos peli on jo tallennettu, nappi ei tee enää mitään ennen resettiä
+        onko_tallennettu = "tallennettu onnistuneesti" in self.result.text()
+        if onko_tallennettu:
+            return
+
+        if self.running:
+            # Peli on käynnissä -> Pysäytetään (Stop)
+            self.stop()
+        else:
+            if self.total_elapsed == 0:
+                # Peliä ei ole vielä aloitettu -> Aloitetaan (Start)
+                if self.btn_start.isEnabled():
+                    self.start()
+            else:
+                # Peli on pysäytetty, mutta aikaa on kulunut -> Jatketaan (TÖHÖ)
+                if self.btn_continue.isEnabled():
+                    self.continue_()
 
     def save(self):
         """Tallentaa pelin SQL-tietokantaan. Sallittu vain, jos peli ei ole käynnissä."""
@@ -1191,15 +1219,16 @@ class AjanottoGUI(QWidget):
     def paivita_juhlapeli_ilmoitus(self):
         """
         Listaa kaikki tulevat juhlapelaajat:
-        - PlayerProfiles.Pelit % 100 = 99 (seuraava peli on rajapyykki)
+        - PlayerProfiles.Pelit % 100 >= 95 (enintään 5 peliä rajapyykkiin)
         - Pelaaja on pelannut viimeisen 6 kk aikana (Games-taulusta, missä tahansa slotissa)
         """
 
         try:
+            # Lasketaan NextMilestone dynaamisesti: Nykyiset pelit + (100 - jakojäännös)
             query = f"""
-                SELECT p.Nimi, p.Pelit, p.Pelit + 1 AS NextMilestone
+                SELECT p.Nimi, p.Pelit, p.Pelit + (100 - (p.Pelit % 100)) AS NextMilestone
                 FROM {profile_table} AS p
-                WHERE (p.Pelit % 100) = 99
+                WHERE (p.Pelit % 100) >= 95
                   AND EXISTS (
                       SELECT 1
                       FROM {table} AS g
@@ -1211,7 +1240,7 @@ class AjanottoGUI(QWidget):
                              LOWER(LTRIM(RTRIM(g.{loser2}))) = p.Nimi
                             )
                   )
-                ORDER BY p.Nimi;
+                ORDER BY (100 - (p.Pelit % 100)) ASC, p.Nimi ASC;
             """
             with conn.cursor() as cur:
                 cur.execute(query)
@@ -1221,13 +1250,13 @@ class AjanottoGUI(QWidget):
                 self.juhlapeli_label.setText("Tulevat juhlapelit: –")
                 return
 
-            # Muotoilu: "nimi: #seuraava"
+            # Muotoilu: "nimi: nykyiset/seuraava" (esim. "andi: 97/100")
             ilmo = []
             for nimi, pelit, next_m in rows:
                 n = (nimi or "").strip().lower()
-                # Varmistetaan että next_m on numero ennen int-muunnosta
                 m_val = int(next_m) if next_m is not None else 0
-                ilmo.append(f"{n}: #{m_val}")
+                pelit_val = int(pelit) if pelit is not None else 0
+                ilmo.append(f"{n}: {pelit_val}/{m_val}")
 
             self.juhlapeli_label.setText(
                 "Tulevat juhlapelit: " + ", ".join(ilmo))
@@ -1265,6 +1294,7 @@ class AjanottoGUI(QWidget):
 
     def closeEvent(self, event):
         """Suljetaan kaikki, jos pääikkuna suljetaan"""
+        keyboard.unhook_all() # Vapautetaan F13-näppäinkuuntelu
         for ikkuna in self.kaikki_tilastot:
             ikkuna.close()
 
@@ -1352,7 +1382,7 @@ class TilastotIkkuna(QDialog):
             "...",
             "Ennätykset",
             "Yhteiset ennätykset",
-            "Päiväkooste",
+            "Juomien värit",
             "Soolopelit"
         ])
         self.combo_tilastot.currentIndexChanged.connect(
@@ -1392,9 +1422,15 @@ class TilastotIkkuna(QDialog):
         self.stats_label = QLabel()
         self.stats_label.setWordWrap(True)
         self.stats_label.setMinimumWidth(150)
+        self.stats_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         font = self.stats_label.font()
         font.setPointSize(12)
         self.stats_label.setFont(font)
+
+        self.stats_scroll = QScrollArea()
+        self.stats_scroll.setWidgetResizable(True)
+        self.stats_scroll.setWidget(self.stats_label)
+        self.stats_scroll.setStyleSheet("QScrollArea { border: none; background-color: transparent; }")
 
         # --- Layoutit ---
         main_layout = QHBoxLayout()
@@ -1476,13 +1512,14 @@ class TilastotIkkuna(QDialog):
         self.editor_button.setMaximumWidth(150)
 
         bottom_layout.addLayout(editor_combo_layout)
-        bottom_layout.addWidget(self.stats_label)
-        self.stats_label.setFixedHeight(280)
+        bottom_layout.addWidget(self.stats_scroll)
+        self.stats_scroll.setFixedHeight(280)
         left_layout.addLayout(bottom_layout)
 
         # Yhdistä vasen ja oikea
-        main_layout.addLayout(left_layout, 4)
-        main_layout.addLayout(right_layout, 2)
+        main_layout.addLayout(left_layout)
+        main_layout.addLayout(right_layout)
+        main_layout.addStretch() # <-- Tämä työntää taulukon ja graafin kiinni toisiinsa vasemmalle
         self.setLayout(main_layout)
 
         # Muut muuttujat
@@ -1501,7 +1538,7 @@ class TilastotIkkuna(QDialog):
         self.pelaajat, _ = hae_pelaajat_kannasta()
         aseta_autocomplete([self.search_input], self.pelaajat, self)
         self.hae_pelit()
-        self.nayta_paivan_ennatykset()
+        self.nayta_juomien_varit()
 
 
     def kasittele_pelaajagraafi(self, index):
@@ -1542,7 +1579,7 @@ class TilastotIkkuna(QDialog):
         elif index == 2:
             self.nayta_yhteiset_ennatykset()
         elif index == 3:
-            self.nayta_paivan_ennatykset()
+            self.nayta_juomien_varit()
         elif index == 4:
             self.solo_pelit()
 
@@ -2394,7 +2431,7 @@ class TilastotIkkuna(QDialog):
             self.graafi_canvas = None
 
         # Luo uusi figure ja canvas
-        self.graafi_fig = Figure(figsize=(5, 4))
+        self.graafi_fig = Figure(figsize=(7, 4))
         self.graafi_fig.patch.set_facecolor("#2b2b2b")
         self.graafi_canvas = FigureCanvas(self.graafi_fig)
         self.graafi_ax = self.graafi_fig.add_subplot(111)
@@ -2406,6 +2443,7 @@ class TilastotIkkuna(QDialog):
         # Lisää uusi canvas comboboxien ALLE
         self.graafi_container.addWidget(self.graafi_canvas)
         self.graafi_canvas.setMinimumWidth(500)
+        self.graafi_fig.tight_layout()
         self.graafi_canvas.draw()
 
     def kopioi_valitut_solut(self):
@@ -2493,6 +2531,8 @@ class TilastotIkkuna(QDialog):
         for spine in ax.spines.values():
             spine.set_color('white')
         ax.grid(color='gray', linestyle='dotted', linewidth=0.5)
+
+        self.graafi_fig.tight_layout()
 
         self.graafi_canvas.draw()
 
@@ -2615,6 +2655,8 @@ class TilastotIkkuna(QDialog):
             spine.set_color('white')
         ax.grid(color='gray', linestyle='dotted', linewidth=0.5)
 
+        self.graafi_fig.tight_layout()
+
         self.graafi_canvas.draw()
 
     def nayta_paivan_pelimaara_voittoprosentti_tiheyksilla(self):
@@ -2710,6 +2752,8 @@ class TilastotIkkuna(QDialog):
         for spine in ax.spines.values():
             spine.set_color('white')
         ax.grid(color='gray', linestyle='dotted', linewidth=0.5)
+
+        self.graafi_fig.tight_layout()
 
         self.graafi_canvas.draw()
 
@@ -2951,104 +2995,19 @@ class TilastotIkkuna(QDialog):
         except Exception as e:
             self.stats_label.setText(f"Virhe: {e}")
 
-    def nayta_paivan_ennatykset(self):
-        # Määritetään aikaväli
-        if self.date_filter_checkbox.isChecked():
-            start = self.start_date_edit.date().toString("yyyy-MM-dd")
-            end = self.end_date_edit.date().toString("yyyy-MM-dd")
-            where_clause = f"WHERE CAST({game_date} AS DATE) BETWEEN ? AND ?"
-            params = [start, end]
-            otsikko_alku = "Valitun aikavälin"
-        else:
-            today = QDate.currentDate().toString("yyyy-MM-dd")
-            where_clause = f"WHERE CAST({game_date} AS DATE) = ?"
-            params = [today]
-            otsikko_alku = "Päivän"
-
-        query = f"""
-            SELECT {game_time}, {winner1}, {winner2}, {loser1}, {loser2}
-            FROM {table}
-            {where_clause}
-        """
-
-        try:
-            with conn.cursor() as cur:
-                cur.execute(query, params)
-                results = cur.fetchall()
-        except Exception as e:
-            self.stats_label.setText(f"Virhe haettaessa tietoja: {e}")
-            return
-
-        if not results:
-            self.stats_label.setText(
-                f"Ei pelejä {otsikko_alku.lower()} vielä.")
-            return
-
-        # Laskurit ja muuttujat
-        pelit_laskuri = Counter()
-        voitot_laskuri = Counter()
-        nopein_sek = float('inf')
-        hitain_sek = 0
-        nopein_nimet = ""
-        hitain_nimet = ""
-
-        for row in results:
-            # Ajan muunnos sekunneiksi format_secondsia varten
-            kesto = row[0]
-            sek = kesto.hour * 3600 + kesto.minute * 60 + kesto.second
-
-            voittajat = [n for n in [row[1], row[2]] if n]
-            haviajat = [n for n in [row[3], row[4]] if n]
-            kaikki = voittajat + haviajat
-
-            # Nopein ja hitain seuranta
-            if sek < nopein_sek:
-                nopein_sek = sek
-                nopein_nimet = ", ".join(kaikki)
-            if sek > hitain_sek:
-                hitain_sek = sek
-                hitain_nimet = ", ".join(kaikki)
-
-            # Tilastojen laskenta Counterilla
-            pelit_laskuri.update(kaikki)
-            voitot_laskuri.update(voittajat)
-
-        # Lasketaan paras voittoprosentti
-        vp_lista = {
-            nimi: (voitot_laskuri[nimi] / pelit) * 100
-            for nimi, pelit in pelit_laskuri.items()
-        }
-        paras_vp = max(vp_lista.values())
-        parhaat_voittajat = [n for n, vp in vp_lista.items() if vp == paras_vp]
-
-        # Eniten juonut (pelannut)
-        max_pelit = max(pelit_laskuri.values())
-        eniten_juoneet = [n for n, p in pelit_laskuri.items() if
-                          p == max_pelit]
-
-        # Koostetaan tekstia ja käytetään format_seconds -funktiota
-        teksti = (
-            f"<b>{otsikko_alku} nopein peli:</b> {format_seconds(nopein_sek)} ({nopein_nimet})<br>"
-            f"<b>{otsikko_alku} hitain peli:</b> {format_seconds(hitain_sek)} ({hitain_nimet})<br>"
-            f"<b>Eniten juonut:</b> {', '.join(eniten_juoneet)} ({max_pelit} juomaa)<br>"
-            f"<b>Paras voittoprosentti:</b> {', '.join(parhaat_voittajat)} ({paras_vp:.1f} %)<br><br>"
-        )
-
-        # Lisätään HTML-muotoiltu väriselite
+    def nayta_juomien_varit(self):
+        """Näyttää pelkästään juomien värikoodit koosteessa."""
         variselite = (
-            "<b>Juomien värikoodit:</b><br>"
-            "<span style='background-color:#8B6508; color:white;'>&nbsp;Kalja&nbsp;</span> "
-            "<span style='background-color:#36648B; color:white;'>&nbsp;Vichy&nbsp;</span> "
-            "<span style='background-color:#556B2F; color:white;'>&nbsp;Siideri&nbsp;</span> "
-            "<span style='background-color:#708090; color:white;'>&nbsp;Lonkero&nbsp;</span> "
-            "<span style='background-color:#8B008B; color:white;'>&nbsp;Hard Seltzer&nbsp;</span> "
-            "<span style='background-color:#CD5C5C; color:white;'>&nbsp;Limsa&nbsp;</span> "
+            "<b>Juomien värikoodit:</b><br><br>"
+            "<span style='background-color:#8B6508; color:white;'>&nbsp;Kalja&nbsp;</span><br><br>"
+            "<span style='background-color:#36648B; color:white;'>&nbsp;Vichy&nbsp;</span><br><br>"
+            "<span style='background-color:#556B2F; color:white;'>&nbsp;Siideri&nbsp;</span><br><br>"
+            "<span style='background-color:#708090; color:white;'>&nbsp;Lonkero&nbsp;</span><br><br>"
+            "<span style='background-color:#8B008B; color:white;'>&nbsp;Hard Seltzer&nbsp;</span><br><br>"
+            "<span style='background-color:#CD5C5C; color:white;'>&nbsp;Limsa&nbsp;</span><br><br>"
             "<span style='background-color:#B8860B; color:white;'>&nbsp;Energiajuoma&nbsp;</span>"
         )
-        
-        teksti += variselite
-
-        self.stats_label.setText(teksti)
+        self.stats_label.setText(variselite)
 
     def solo_pelit(self):
         """Näyttää vain ne pelit, joissa {winner1}, {winner2}, {loser1} ja
@@ -3132,6 +3091,8 @@ class TilastotIkkuna(QDialog):
         ax.spines['right'].set_color('white')
         ax.grid(color='gray', linestyle='dotted', linewidth=0.5, axis='y')
 
+        self.graafi_fig.tight_layout()
+
         self.graafi_canvas.draw()
 
     def nayta_pelikestot_barplot(self):
@@ -3159,7 +3120,10 @@ class TilastotIkkuna(QDialog):
         for rivi in rows:
             kesto = rivi[0]
             sekunnit = kesto.hour * 3600 + kesto.minute * 60 + kesto.second
-            if 20 <= sekunnit <= 400:
+            if sekunnit >= 20:
+                # Niputetaan kaikki yli 400s kestävät pelit viimeiseen palkkiin
+                if sekunnit >= 400:
+                    sekunnit = 405
                 kesto_sekunnit.append(sekunnit)
 
         if not kesto_sekunnit:
@@ -3167,8 +3131,8 @@ class TilastotIkkuna(QDialog):
                                     "Ei pelejä valitulla kestovälillä.")
             return
 
-        # Histogrammi 10 sekunnin välein 20-400s
-        bins = list(range(20, 401, 10)) + [3600]
+        # Histogrammi 10 sekunnin välein 20-410s
+        bins = list(range(20, 411, 10))
 
         counts, edges = np.histogram(kesto_sekunnit, bins=bins)
 
@@ -3188,7 +3152,7 @@ class TilastotIkkuna(QDialog):
 
         # xtickit binien reunoihin (20, 30, 40, ... 400)
         ax.set_xticks(edges)
-        ax.set_xlim(20, 400)
+        ax.set_xlim(20, 410)
         ax.set_xticklabels(ax.get_xticklabels(),
                            rotation=90)  # 90 astetta = pystyyn
 
@@ -3211,6 +3175,7 @@ class TilastotIkkuna(QDialog):
         ax.grid(color='gray', linestyle='dotted', linewidth=0.5, axis='y')
         ax.set_ylim(top=ax.get_ylim()[1] * 1.10)
 
+        self.graafi_fig.tight_layout()
         self.graafi_canvas.draw()
 
     def nayta_kumulatiivinen_pelit(self):
@@ -3257,6 +3222,7 @@ class TilastotIkkuna(QDialog):
         ax.spines['right'].set_color('white')
         ax.grid(color='gray', linestyle='dotted', linewidth=0.5, axis='both')
 
+        self.graafi_fig.tight_layout()
         self.graafi_canvas.draw()
 
     def nayta_keskiaikojen_muutos(self):
@@ -3311,6 +3277,7 @@ class TilastotIkkuna(QDialog):
         ax.spines['right'].set_color('white')
         ax.grid(color='gray', linestyle='dotted', linewidth=0.5, axis='both')
 
+        self.graafi_fig.tight_layout()
         self.graafi_canvas.draw()
 
     def nayta_tiimien_voitto_pie(self):
@@ -3477,6 +3444,8 @@ class TilastotIkkuna(QDialog):
         for spine in ax.spines.values():
             spine.set_color('white')
         ax.grid(color='gray', linestyle='dotted', linewidth=0.5)
+
+        self.graafi_fig.tight_layout()
 
         self.graafi_canvas.draw()
 
