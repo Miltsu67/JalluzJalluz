@@ -22,9 +22,9 @@ miro.haltia.mh@gmail.com
 """
 from PySide6.QtWidgets import *
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
-from PySide6.QtCore import QUrl, QTimer, QDate, Qt, QRegularExpression, QObject, Signal, QRunnable, QThreadPool, QDateTime
+from PySide6.QtCore import QUrl, QTimer, QDate, Qt, QRegularExpression, QObject, Signal, QRunnable, QThreadPool, QDateTime, QThread
 from PySide6.QtGui import QIcon, QRegularExpressionValidator, QPixmap, QColor
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.dates as mdates
 from matplotlib.ticker import MultipleLocator, FuncFormatter
@@ -39,6 +39,9 @@ import platform
 import numpy as np
 from dotenv import load_dotenv
 import keyboard
+import serial
+
+
 
 if getattr(sys, 'frozen', False):
     # If the application is frozen (e.g., bundled by PyInstaller)
@@ -76,6 +79,8 @@ def lataa_config(config_tiedosto=rf"{JALLUZ_WORKING_DIR}\config.xml"):
             "rank_coop") is not None else "",
         "rank_sandels": polut.find("rank_sandels").text if polut.find(
             "rank_sandels") is not None else "",
+        "bluetooth_com": polut.find("bluetooth_com").text if polut.find(
+            "bluetooth_com") is not None else "COM4",
     }
     return config
 
@@ -284,6 +289,32 @@ class DatabaseWorker(QRunnable):
 class HotkeySignal(QObject):
     """Signaali, jolla keyboard-kirjaston taustasäie keskustelee PySide6:n kanssa turvallisesti."""
     pressed = Signal()
+
+class SerialWorker(QThread):
+    """Taustasäie, joka kuuntelee Bluetooth-sarjaporttia jäätämättä käyttöliittymää."""
+    nappi_painettu = Signal()
+
+    def __init__(self, portti="COM4", baudrate=9600):
+        super().__init__()
+        self.portti = portti
+        self.baudrate = baudrate
+        self.running = True
+
+    def run(self):
+        try:
+            with serial.Serial(self.portti, self.baudrate, timeout=1) as ser:
+                while self.running:
+                    # Jos sarjaportissa on luettavaa dataa
+                    if ser.in_waiting > 0:
+                        rivi = ser.readline().decode('utf-8', errors='ignore').strip()
+                        if rivi == "JALLUZ_PAINETTU":
+                            self.nappi_painettu.emit()
+        except Exception as e:
+            print(f"Sarjaporttia {self.portti} ei saatu auki tai yhteys katkesi: {e}")
+
+    def stop(self):
+        self.running = False
+        self.wait()
 
 class Latausikkuna(QWidget):
     """Photoshop-tyylinen latausikkuna, joka näytetään ohjelman käynnistyessä."""
@@ -667,10 +698,20 @@ class AjanottoGUI(QWidget):
 
         self.expert_checkbox.setChecked(True)
 
-        # Alustetaan globaali pikanäppäin (F13)
+        self.viimeisin_painallus = 0
+        self.aikalukko_sekunteina = 0.5  # estää vahingossa useamman painalluksen  
+
+        # USB-näppäimistön (F13) kuuntelu
         self.hotkey_signal = HotkeySignal()
-        self.hotkey_signal.pressed.connect(self.start_stop_peli)
+        self.hotkey_signal.pressed.connect(self.nappia_painettu_vastaanotettu)
         keyboard.add_hotkey('f13', self.hotkey_signal.pressed.emit)
+
+        # Bluetooth-sarjaportin kuuntelu taustasäikeessä
+        # Voit määrittää COM-portin .env-tiedostossa, esim: BLUETOOTH_COM="COM4"
+        com_portti = config.get("bluetooth_com", "COM4")
+        self.serial_worker = SerialWorker(portti=com_portti)
+        self.serial_worker.nappi_painettu.connect(self.nappia_painettu_vastaanotettu)
+        self.serial_worker.start()
 
     def toggle_expert(self, state):
         """Näytetään tai piilotetaan juomapudotusvalikot + todennäköisyysnappi/label"""
@@ -863,6 +904,17 @@ class AjanottoGUI(QWidget):
         self.tarkista_voiko_tallentaa()
         self.btn_kuppi_nurin.setEnabled(False)
         self.btn_continue.setEnabled(False)
+
+    def nappia_painettu_vastaanotettu(self):
+        """Ottaa vastaan signaalin sekä F13-näppäimestä että Bluetooth-sarjaportista."""
+        nykyinen_aika = time.time()
+        
+        # Tarkistetaan, onko edellisestä kerrasta kulunut yli x sekunttia
+        if nykyinen_aika - self.viimeisin_painallus > self.aikalukko_sekunteina:
+            self.viimeisin_painallus = nykyinen_aika
+            self.start_stop_peli()
+        else:
+            print("Tuplapainallus estetty aikalukolla (USB ja Bluetooth komento tulivat yhtä aikaa).")
 
     def start_stop_peli(self):
         """Käsittelee yhden napin logiikan: Start, Stop ja Continue (TÖHÖ)."""
@@ -1294,7 +1346,12 @@ class AjanottoGUI(QWidget):
 
     def closeEvent(self, event):
         """Suljetaan kaikki, jos pääikkuna suljetaan"""
+
         keyboard.unhook_all() # Vapautetaan F13-näppäinkuuntelu
+
+        if hasattr(self, 'serial_worker'):
+            self.serial_worker.stop()
+
         for ikkuna in self.kaikki_tilastot:
             ikkuna.close()
 
@@ -1628,6 +1685,7 @@ class TilastotIkkuna(QDialog):
         for i, row in enumerate(data):
             # Käydään läpi vain näkyvät 9 saraketta (indeksit 0-8)
             for j in range(9):
+                sek = None
                 # Varmistetaan, ettei ylitetä listan rajoja
                 arvo = row[j] if j < len(row) else ""
 

@@ -34,5 +34,8 @@
 	<rank_pirkka>C:\Users\miroh\Music\JalluzJalluz\ranks\pirkka_rank.png</rank_pirkka>
 	<rank_coop>C:\Users\miroh\Music\JalluzJalluz\ranks\coop_rank.png</rank_coop>
 	<rank_sandels>C:\Users\miroh\Music\JalluzJalluz\ranks\sandels_rank.png</rank_sandels>
+
+	<bluetooth_com>COM4</bluetooth_com>
+
     </paths>
 </config>
