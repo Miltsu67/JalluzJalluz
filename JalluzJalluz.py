@@ -324,7 +324,7 @@ class SerialWorker(QThread):
                                 
                         # Tarkistetaan onko yhteys "kuollut" (hiljaista yli 6 sekuntia)
                         if time.time() - viimeisin_viesti > 6:
-                            print("Yhteys aikakatkaistiin (Arduino ei vastaa). Katkaistaan portti.")
+                            print("Yhteys aikakatkaistiin (ESP ei vastaa). Katkaistaan portti.")
                             break  # Tämä break poistuu sisemmästä loopista ja sulkee portin automaattisesti
                             
             except Exception as e:
@@ -726,6 +726,8 @@ class AjanottoGUI(QWidget):
 
         self.expert_checkbox.setChecked(True)
 
+        self.peli_tallennettu = False
+
         self.viimeisin_painallus = 0
         self.aikalukko_sekunteina = 0.5  # estää vahingossa useamman painalluksen  
 
@@ -971,22 +973,16 @@ class AjanottoGUI(QWidget):
 
     def save(self):
         """Tallentaa pelin SQL-tietokantaan. Sallittu vain, jos peli ei ole käynnissä."""
-
-        if self.running:
-            QMessageBox.warning(self, "Tallennus estetty",
-                                "Peli on vielä käynnissä.\n\nPysäytä peli ennen tallentamista.")
+        if self.running or self.peli_tallennettu:
             return
 
-        # Pelaajien nimet
         a1 = self.a1_input.text().strip()
         a2 = self.a2_input.text().strip()
         b1 = self.b1_input.text().strip()
         b2 = self.b2_input.text().strip()
 
-        # Voittajatiimin valinta
         voittaja_valittu = self.radio_teamA.isChecked() or self.radio_teamB.isChecked()
 
-        # Save-nappia ei aktivoida, ennekuin nimet ja voittaja syötetty
         if not all([a1, a2, b1, b2]) or not voittaja_valittu:
             QMessageBox.warning(
                 self, "Virhe",
@@ -996,7 +992,6 @@ class AjanottoGUI(QWidget):
             )
             return
 
-        # Ajan muokkaus
         aika_str = self.label.text()
         try:
             m, s = map(int, aika_str.split(":"))
@@ -1004,30 +999,35 @@ class AjanottoGUI(QWidget):
                 raise ValueError
             self.total_elapsed = m * 60 + s
         except ValueError:
-            QMessageBox.warning(self, "Virhe",
-                                "Aika ei ole oikeassa muodossa (mm:ss).")
+            QMessageBox.warning(self, "Virhe", "Aika ei ole oikeassa muodossa (mm:ss).")
             return
-        self.result.setText(f"Aika: {aika_str}")
-        self.info.setText("Ajanotto lopetettu.")
 
-        # Voittaja ja pöydän alla
         winner = "Tiimi Ikkunaseinä" if self.radio_teamA.isChecked() else "Tiimi Julisteseinä"
         peli_tila = 1 if self.game_under_table.isChecked() else 0
-        self.btn_kuppi_nurin.setEnabled(False)
-        self.btn_start.setEnabled(True)
-        self.btn_continue.setEnabled(False)
-        self.radio_teamA.setEnabled(False)
-        self.radio_teamB.setEnabled(False)
-        self.game_under_table.setEnabled(False)
 
-        # Otetaan pelinvetäjä talteen vain, jos Ranked-tila on päällä
         gamemaster_nimi = None
         if self.expert_checkbox.isChecked():
-            gamemaster_nimi = self.gamemaster_input.text().strip()
-            if not gamemaster_nimi:
-                gamemaster_nimi = None # Varmistetaan, että tyhjä kenttä tallentuu NULL-arvona
+            gamemaster_nimi = self.gamemaster_input.text().strip() or None
 
-        # Tulostetaan pelin tulos
+        # Yritetään tallennusta kantaan
+        onnistui = self.tallenna_sql_serveriin(a1, a2, b1, b2, winner, peli_tila, gamemaster_nimi)
+        if not onnistui:
+            return
+
+        # Merkitään peli tallennetuksi ja lukitaan UI, kunnes painetaan Reset
+        self.peli_tallennettu = True
+        self.info.setText("Ajanotto lopetettu.")
+
+        for kentta in (self.a1_input, self.a2_input, self.b1_input, self.b2_input,
+                    self.a1_juoma, self.a2_juoma, self.b1_juoma, self.b2_juoma,
+                    self.comment_edit, self.gamemaster_input,
+                    self.radio_teamA, self.radio_teamB, self.game_under_table,
+                    self.btn_kuppi_nurin, self.btn_start, self.btn_pause,
+                    self.btn_continue, self.btn_save):
+            kentta.setEnabled(False)
+
+        self.label.setReadOnly(True)
+
         tulos_msg = (
             f"Tiimi Ikkunaseinä: {a1}, {a2}\n"
             f"Tiimi Julisteseinä: {b1}, {b2}\n\n"
@@ -1036,11 +1036,6 @@ class AjanottoGUI(QWidget):
             f"Peli tallennettu onnistuneesti!"
         )
         self.result.setText(tulos_msg)
-
-        # Tallennus SQL Serveriin (juomat ja voittajapuoli lisätään myöhemmin)
-        self.tallenna_sql_serveriin(a1, a2, b1, b2, winner, peli_tila, gamemaster_nimi)
-
-        # Juhlapeli-ilmon päivitys
         self.paivita_juhlapeli_ilmoitus()
 
     def lisaa_aikaa(self):
@@ -1065,10 +1060,11 @@ class AjanottoGUI(QWidget):
                               f"{self.kaadetut_kupit})")
 
     def tarkista_voiko_tallentaa(self):
-        """Tarkistetaan, voidaanko Save-nappia aktivoida
+        """Tarkistetaan, voidaanko Save-nappia aktivoida"""
+        if getattr(self, "peli_tallennettu", False):
+            self.btn_save.setEnabled(False)
+            return
 
-
-        """
         nimet_ok = all([
             self.a1_input.text().strip(),
             self.a2_input.text().strip(),
@@ -1137,7 +1133,7 @@ class AjanottoGUI(QWidget):
             {drink1}, 
             {drink2}, 
             {drink3}, {drink4}, {under_table}, {winner_side}, {comment}, {gamemaster})
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
 
 
@@ -1150,8 +1146,10 @@ class AjanottoGUI(QWidget):
                 ))
                 conn.commit()
                 self.btn_save.setEnabled(False)
+                return True
             except Exception as e:
                 QMessageBox.critical(self, "Virhe", f"Virhe tallennettaessa: {e}")
+                return False
 
     def avaa_tilastot(self):
         """Tilastojen avaus, lisätään listaan aukiolevista tilastot -ikkunoista
@@ -1180,6 +1178,18 @@ class AjanottoGUI(QWidget):
             # Jos käyttäjä vastaa "No", poistutaan funktiosta tekemättä mitään
             if vastaus == QMessageBox.StandardButton.No:
                 return
+
+        self.peli_tallennettu = False
+
+        # Vapautetaan tallennuksessa lukitut kentät ja napit
+        for kentta in (self.a1_input, self.a2_input, self.b1_input, self.b2_input,
+                       self.a1_juoma, self.a2_juoma, self.b1_juoma, self.b2_juoma,
+                       self.comment_edit, self.gamemaster_input,
+                       self.radio_teamA, self.radio_teamB, self.game_under_table,
+                       self.btn_start, self.btn_pause):
+            kentta.setEnabled(True)
+
+        self.label.setReadOnly(False)
 
         # Tyhjennä pelaajien nimet
         self.a1_input.clear()
@@ -1408,7 +1418,7 @@ class HelpIkkuna(QDialog):
         help_widget = QWidget()
         help_layout = QHBoxLayout(help_widget)
 
-        help_text = "TG: @PelletinVPJ"
+        help_text = "TG: @JalluzJalluz"
 
         help_layout.addWidget(QLabel(help_text))
 
