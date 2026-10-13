@@ -13,7 +13,7 @@
 	<profile_table_name>dbo.PlayerProfiles</profile_table_name>
 
 	<!-- Perustaulukon sarakkeet -->
-	<default_table_columns>winner1,winner2,loser1,loser2,game_time,game_date,under_table,winner_side,drink1,drink2,drink3,drink4,comment</default_table_columns>
+	<default_table_columns>winner1,winner2,loser1,loser2,game_time,game_date,under_table,winner_side,drink1,drink2,drink3,drink4,comment, gamemaster</default_table_columns>
 
 	<!-- Luotettu yhteys, ei tarvitse muuttaa -->
         <trusted_connection>yes</trusted_connection>
@@ -35,7 +35,8 @@
 	<rank_coop>C:\Users\miroh\Music\JalluzJalluz\ranks\coop_rank.png</rank_coop>
 	<rank_sandels>C:\Users\miroh\Music\JalluzJalluz\ranks\sandels_rank.png</rank_sandels>
 
-	<bluetooth_com>COM4</bluetooth_com>
+	<bluetooth_com>COM8</bluetooth_com>
+	<usb_com>COM13</usb_com>
 
     </paths>
 </config>

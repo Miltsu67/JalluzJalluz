@@ -81,6 +81,8 @@ def lataa_config(config_tiedosto=rf"{JALLUZ_WORKING_DIR}\config.xml"):
             "rank_sandels") is not None else "",
         "bluetooth_com": polut.find("bluetooth_com").text if polut.find(
             "bluetooth_com") is not None else "COM4",
+        "usb_com": polut.find("usb_com").text if polut.find(
+            "usb_com") is not None else "COM3"
     }
     return config
 
@@ -95,7 +97,7 @@ table = config["table_name"]
 profile_table = config["profile_table_name"]
 (winner1, winner2, loser1, loser2, game_time, game_date, under_table,
  winner_side, drink1,
- drink2, drink3, drink4, comment) = config["default_table_columns"].split(",")
+ drink2, drink3, drink4, comment, gamemaster) = config["default_table_columns"].split(",")
 
 connection_string = (
     f"DRIVER={{ODBC Driver 17 for SQL Server}};"
@@ -291,7 +293,7 @@ class HotkeySignal(QObject):
     pressed = Signal()
 
 class SerialWorker(QThread):
-    """Taustasäie, joka kuuntelee Bluetooth-sarjaporttia jäätämättä käyttöliittymää."""
+    """Taustasäie, joka kuuntelee Bluetooth-sarjaporttia ja käyttää sydänääntä (PING) katkosten tunnistamiseen."""
     nappi_painettu = Signal()
 
     def __init__(self, portti="COM4", baudrate=9600):
@@ -301,16 +303,42 @@ class SerialWorker(QThread):
         self.running = True
 
     def run(self):
-        try:
-            with serial.Serial(self.portti, self.baudrate, timeout=1) as ser:
-                while self.running:
-                    # Jos sarjaportissa on luettavaa dataa
-                    if ser.in_waiting > 0:
-                        rivi = ser.readline().decode('utf-8', errors='ignore').strip()
-                        if rivi == "JALLUZ_PAINETTU":
-                            self.nappi_painettu.emit()
-        except Exception as e:
-            print(f"Sarjaporttia {self.portti} ei saatu auki tai yhteys katkesi: {e}")
+        while self.running:
+            try:
+                with serial.Serial(self.portti, self.baudrate, timeout=1) as ser:
+                    print(f"Bluetooth yhdistetty porttiin {self.portti}")
+                    viimeisin_viesti = time.time()
+                    
+                    while self.running:
+                        data = ser.readline()
+                        
+                        # Jos saatiin mitä tahansa dataa, päivitetään kello
+                        if data:
+                            rivi = data.decode('utf-8', errors='ignore').strip()
+                            
+                            if rivi == "JALLUZ_PAINETTU":
+                                self.nappi_painettu.emit()
+                                viimeisin_viesti = time.time()
+                            elif rivi == "PING":
+                                viimeisin_viesti = time.time()
+                                
+                        # Tarkistetaan onko yhteys "kuollut" (hiljaista yli 6 sekuntia)
+                        if time.time() - viimeisin_viesti > 6:
+                            print("Yhteys aikakatkaistiin (Arduino ei vastaa). Katkaistaan portti.")
+                            break  # Tämä break poistuu sisemmästä loopista ja sulkee portin automaattisesti
+                            
+            except Exception as e:
+                print(f"Virhe avatessa porttia {self.portti}: {e}")
+            
+            # Jos ohjelmaa ollaan sulkemassa, ei jäädä odottamaan
+            if not self.running:
+                break
+                
+            print("Yritetään yhdistää uudelleen 15 sekunnin kuluttua...")
+            for _ in range(150):
+                if not self.running:
+                    break
+                time.sleep(0.1)
 
     def stop(self):
         self.running = False
@@ -707,11 +735,16 @@ class AjanottoGUI(QWidget):
         keyboard.add_hotkey('f13', self.hotkey_signal.pressed.emit)
 
         # Bluetooth-sarjaportin kuuntelu taustasäikeessä
-        # Voit määrittää COM-portin .env-tiedostossa, esim: BLUETOOTH_COM="COM4"
-        com_portti = config.get("bluetooth_com", "COM4")
-        self.serial_worker = SerialWorker(portti=com_portti)
-        self.serial_worker.nappi_painettu.connect(self.nappia_painettu_vastaanotettu)
-        self.serial_worker.start()
+        # Voit määrittää COM-portin .env-tiedostossa, esim: BLUETOOTH_COM="COM8"
+        com_portti = config.get("bluetooth_com", "COM8")
+        self.serial_worker_bt = SerialWorker(portti=com_portti)
+        self.serial_worker_bt.nappi_painettu.connect(self.nappia_painettu_vastaanotettu)
+        self.serial_worker_bt.start()
+
+        com_portti_usb = config.get("usb_com", "COM3")
+        self.serial_worker_usb = SerialWorker(portti=com_portti_usb)
+        self.serial_worker_usb.nappi_painettu.connect(self.nappia_painettu_vastaanotettu)
+        self.serial_worker_usb.start()
 
     def toggle_expert(self, state):
         """Näytetään tai piilotetaan juomapudotusvalikot + todennäköisyysnappi/label"""
@@ -1103,8 +1136,8 @@ class AjanottoGUI(QWidget):
             ({game_date}, {game_time}, {winner1}, {winner2}, {loser1}, {loser2}, 
             {drink1}, 
             {drink2}, 
-            {drink3}, {drink4}, {under_table}, {winner_side}, {comment}, gamemaster)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            {drink3}, {drink4}, {under_table}, {winner_side}, {comment}, {gamemaster})
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
 
 
@@ -1349,8 +1382,10 @@ class AjanottoGUI(QWidget):
 
         keyboard.unhook_all() # Vapautetaan F13-näppäinkuuntelu
 
-        if hasattr(self, 'serial_worker'):
-            self.serial_worker.stop()
+        if hasattr(self, 'serial_worker_bt'):
+            self.serial_worker_bt.stop()
+        if hasattr(self, 'serial_worker_usb'):
+            self.serial_worker_usb.stop()
 
         for ikkuna in self.kaikki_tilastot:
             ikkuna.close()
@@ -1741,7 +1776,7 @@ class TilastotIkkuna(QDialog):
         nimi = self.search_input.text().strip()
         kayta_aikavalia = self.date_filter_checkbox.isChecked()
 
-        query = f"SELECT ID, {game_date}, {game_time}, {winner1}, {winner2}, {loser1}, {loser2}, {under_table}, {comment}, {drink1}, {drink2}, {drink3}, {drink4}, gamemaster FROM {table}"
+        query = f"SELECT ID, {game_date}, {game_time}, {winner1}, {winner2}, {loser1}, {loser2}, {under_table}, {comment}, {drink1}, {drink2}, {drink3}, {drink4}, {gamemaster} FROM {table}"
         conditions = []
         params = []
 
@@ -1937,7 +1972,7 @@ class TilastotIkkuna(QDialog):
 
             try:
                 with conn.cursor() as cur:
-                    cur.execute(f"SELECT COUNT(*) FROM {table} WHERE LOWER(LTRIM(RTRIM(gamemaster))) = ?", (pelaaja,))
+                    cur.execute(f"SELECT COUNT(*) FROM {table} WHERE LOWER(LTRIM(RTRIM({gamemaster}))) = ?", (pelaaja,))
                     vedetyt_pelit_lkm = cur.fetchone()[0]
             except Exception as e:
                 print(f"Pelinvetäjien laskenta epäonnistui: {e}")
@@ -2145,7 +2180,7 @@ class TilastotIkkuna(QDialog):
                     SELECT ID, {winner1}, {winner2}, {loser1}, {loser2},
                            {under_table}, {game_time}, {winner_side},
                            {drink1}, {drink2}, {drink3}, {drink4},
-                           {game_date}, {comment}, gamemaster
+                           {game_date}, {comment}, {gamemaster}
                     FROM {table}
                     WHERE ID = ?
                 """, (peli_id,))
@@ -2181,7 +2216,7 @@ class TilastotIkkuna(QDialog):
         kommentti_le.setPlaceholderText("Muokkaa kommenttia...")
 
         # Pelinvetäjä
-        gamemaster_le = QLineEdit(str(getattr(rivi, 'gamemaster', '') or ""))
+        gamemaster_le = QLineEdit(str(getattr(rivi, gamemaster, '') or ""))
         gamemaster_le.setMaxLength(50)
         gamemaster_le.setPlaceholderText("Muokkaa pelinvetäjää...")
 
@@ -2330,7 +2365,7 @@ class TilastotIkkuna(QDialog):
             with conn.cursor() as cur:
                 # Vaihdetaan nimi kaikissa {winner1}–{loser2} kentissä
                 for sarake in [f"{winner1}", f"{winner2}", f"{loser1}",
-                               f"{loser2}"]:
+                               f"{loser2}", f"{gamemaster}"]:
                     cur.execute(
                         f"UPDATE {table} SET {sarake} = ? WHERE LOWER({sarake}) = LOWER(?)",
                         (uusi, vanha)
@@ -2345,7 +2380,7 @@ class TilastotIkkuna(QDialog):
 
     def _get_drink_options(self):
         """Palauttaa sallitut juoma-vaihtoehdot."""
-        return ["...", "Kalja", "Vichy", "Hard Seltzer", "Siideri", "Limsa",
+        return ["...", "Kalja", "Vichy", "Hard Seltzer", "Siideri", "Lonkero", "Limsa",
                 "Energiajuoma", "Muu"]
 
     def tallenna_muokattu_peli(self, peli_id, p1, p2, p3, p4, poydan_alla,
@@ -2369,7 +2404,7 @@ class TilastotIkkuna(QDialog):
         # Haetaan aiemmat juomat ja voittopuoli, jotta voidaan säilyttää None-arvot
         with conn.cursor() as cur:
             cur.execute(
-                f"SELECT {drink1}, {drink2}, {drink3}, {drink4}, {winner_side}, gamemaster "
+                f"SELECT {drink1}, {drink2}, {drink3}, {drink4}, {winner_side}, {gamemaster} "
                 f"FROM {table} "
                 f"WHERE ID = ?",
                 (peli_id,))
@@ -2433,10 +2468,10 @@ class TilastotIkkuna(QDialog):
                         {winner_side} = ?,
                         {game_date} = ?,
                         {comment} = ?,
-                        gamemaster = ?
+                        {gamemaster} = ?
                     WHERE ID = ?
                 """, (
-                    p1.strip(), p2.strip(), p3.strip(), p4.strip(),
+                    p1.strip().lower(), p2.strip().lower(), p3.strip().lower(), p4.strip().lower(),
                     int(poydan_alla),
                     kesto_aikana,
                     *tallennettavat_juomat,
