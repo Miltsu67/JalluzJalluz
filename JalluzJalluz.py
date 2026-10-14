@@ -22,7 +22,7 @@ miro.haltia.mh@gmail.com
 """
 from PySide6.QtWidgets import *
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
-from PySide6.QtCore import QUrl, QTimer, QDate, Qt, QRegularExpression, QObject, Signal, QRunnable, QThreadPool, QDateTime, QThread
+from PySide6.QtCore import QUrl, QTimer, QDate, Qt, QRegularExpression, QObject, Signal, QRunnable, QThreadPool, QDateTime, QThread, QStringListModel
 from PySide6.QtGui import QIcon, QRegularExpressionValidator, QPixmap, QColor
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -238,19 +238,17 @@ def hae_pelaajat_kannasta():
 
 
 def aseta_autocomplete(input_fields, pelaajat, parent=None):
-    completer = QCompleter(pelaajat, parent)
-    completer.setCaseSensitivity(Qt.CaseInsensitive)
-    completer.setFilterMode(Qt.MatchStartsWith)
-    completer.setCompletionMode(QCompleter.PopupCompletion)
-
     for field in input_fields:
-        field.setCompleter(completer)
-
-        def update_completion_prefix(text, comp=completer):
-            comp.setCompletionPrefix(text)
-            comp.complete()
-
-        field.textEdited.connect(update_completion_prefix)
+        completer = field.completer()
+        if completer is None:
+            completer = QCompleter(pelaajat, field)
+            completer.setCaseSensitivity(Qt.CaseInsensitive)
+            completer.setFilterMode(Qt.MatchStartsWith)
+            completer.setCompletionMode(QCompleter.PopupCompletion)
+            field.setCompleter(completer)
+        else:
+            # Päivitetään vain olemassa olevan completerin sanalista!
+            completer.setModel(QStringListModel(pelaajat, completer))
 
 
 def format_seconds(seconds):
@@ -342,7 +340,8 @@ class SerialWorker(QThread):
 
     def stop(self):
         self.running = False
-        self.wait()
+        self.quit()
+        self.wait(300)
 
 class Latausikkuna(QWidget):
     """Photoshop-tyylinen latausikkuna, joka näytetään ohjelman käynnistyessä."""
@@ -499,6 +498,8 @@ class AjanottoGUI(QWidget):
         self.label = QLineEdit("00:00")
         self.label.setStyleSheet("QLineEdit { font-size: 18px; }")
         self.label.setReadOnly(False)
+
+        self.label.textChanged.connect(self.tarkista_voiko_tallentaa)
 
         # Pelinvetäjän tarkastuskenttä
         self.gamemaster_input = QLineEdit()
@@ -1038,6 +1039,13 @@ class AjanottoGUI(QWidget):
         self.result.setText(tulos_msg)
         self.paivita_juhlapeli_ilmoitus()
 
+        #Päivitetään autocomplete listat, jos uusia pelaajia on tullut
+        self.pelaajat, self.pelaaja_pelit = hae_pelaajat_kannasta()
+        aseta_autocomplete(
+                    [self.a1_input, self.a2_input, self.b1_input, self.b2_input, self.gamemaster_input],
+                    self.pelaajat, self)
+        
+
     def lisaa_aikaa(self):
 
         if not self.running and hasattr(self, 'total_elapsed'):
@@ -1073,7 +1081,9 @@ class AjanottoGUI(QWidget):
         ])
         voittaja_valittu = self.radio_teamA.isChecked() or self.radio_teamB.isChecked()
 
-        self.btn_save.setEnabled(nimet_ok and voittaja_valittu and not self.running)
+        peli_pelattu = self.total_elapsed > 0 or self.label.text().strip() != "00:00"
+
+        self.btn_save.setEnabled(nimet_ok and voittaja_valittu and not self.running and peli_pelattu)
 
     def paivita_aika(self):
         """Pelin keston päivittäjä
@@ -1120,7 +1130,7 @@ class AjanottoGUI(QWidget):
 
 
         poydan_alle = int(peli_tila)
-        kommentti_teksti = self.comment_edit.text()
+        kommentti_teksti = self.comment_edit.text().strip() or None
 
         # Muutetaan kesto TIME-muotoon
         kesto_aikana = (datetime.min + kesto).time()
@@ -1390,7 +1400,14 @@ class AjanottoGUI(QWidget):
     def closeEvent(self, event):
         """Suljetaan kaikki, jos pääikkuna suljetaan"""
 
-        keyboard.unhook_all() # Vapautetaan F13-näppäinkuuntelu
+        try:
+            keyboard.unhook_all() # Vapautetaan F13-näppäinkuuntelu
+        except Exception:
+            pass
+
+        self.timer.stop()
+        self.pelimusiikki_player.stop()
+        self.valimusiikki_player.stop()
 
         if hasattr(self, 'serial_worker_bt'):
             self.serial_worker_bt.stop()
@@ -1401,6 +1418,9 @@ class AjanottoGUI(QWidget):
             ikkuna.close()
 
         for ikkuna in self.aktiiviset_profiili_ikkunat:
+            ikkuna.close()
+
+        for ikkuna in self.aktiiviset_help_ikkunat:
             ikkuna.close()
 
         event.accept()
@@ -1517,7 +1537,7 @@ class TilastotIkkuna(QDialog):
 
         self.end_date_edit = QDateEdit()
         self.end_date_edit.setCalendarPopup(True)
-        self.end_date_edit.setDate(QDate.currentDate().addDays(1))
+        self.end_date_edit.setDate(QDate.currentDate())
         self.end_date_edit.dateChanged.connect(self.hae_pelit)
 
         # --- Koostelabel ---
@@ -1708,9 +1728,8 @@ class TilastotIkkuna(QDialog):
         def sort_key(x):
             value = x[self.sort_column_tilastot]
             if self.sort_column_tilastot == 7:
-                # Pöydän alla -sarake: None → False
                 return bool(value)
-            return value if value is not None else ""
+            return (value is not None, value if value is not None else "")
 
         data.sort(key=sort_key, reverse=self.sort_desc_tilastot)
 
@@ -1805,7 +1824,7 @@ class TilastotIkkuna(QDialog):
                 params.extend([nimi.lower()] * 4)
 
         if kayta_aikavalia:
-            conditions.append(f"{game_date} BETWEEN ? AND ?")
+            conditions.append(f"CAST({game_date} AS DATE) BETWEEN ? AND ?")
             params.append(self.start_date_edit.date().toPython())
             params.append(self.end_date_edit.date().toPython())
 
@@ -2831,16 +2850,18 @@ class TilastotIkkuna(QDialog):
             if c > 1:
                 ax.text(x + 0.1, y + 0.1, f"x{c}", fontsize=8, color='white')
 
-        # Sovite (2. aste)
+        # Sovite (2. aste) piirretään vain, jos eri x-arvoja on vähintään 3
         x_arr = np.array(x_vals)
         y_arr = np.array(y_vals)
-        coeffs = np.polyfit(x_arr, y_arr, deg=2)
-        poly = np.poly1d(coeffs)
-        x_fit = np.linspace(min(x_arr), max(x_arr), 200)
-        y_fit = poly(x_fit)
-        ax.plot(x_fit, y_fit, color='white', linewidth=2,
-                label="2. asteen sovite")
-        ax.legend(facecolor='#2b2b2b', edgecolor='white', labelcolor='white')
+
+        if len(set(x_arr)) >= 3:
+            coeffs = np.polyfit(x_arr, y_arr, deg=2)
+            poly = np.poly1d(coeffs)
+            x_fit = np.linspace(min(x_arr), max(x_arr), 200)
+            y_fit = poly(x_fit)
+            ax.plot(x_fit, y_fit, color='white', linewidth=2,
+                    label="2. asteen sovite")
+            ax.legend(facecolor='#2b2b2b', edgecolor='white', labelcolor='white')
 
         # Ulkoasu
         ax.set_title(f"{nimi} – Päivän pelimäärän vaikutus voittoprosenttiin",
@@ -3118,7 +3139,8 @@ class TilastotIkkuna(QDialog):
 
         """
         query = f"""
-                SELECT ID, {game_date}, {game_time}, {winner1}, {winner2}, {loser1}, {loser2}, {under_table}
+                SELECT ID, {game_date}, {game_time}, {winner1}, {winner2}, {loser1}, {loser2},
+                       {under_table}, {comment}, {drink1}, {drink2}, {drink3}, {drink4}, {gamemaster}
                 FROM {table}
                 WHERE LOWER({winner1}) = LOWER({winner2})
                   AND LOWER({winner1}) = LOWER({loser1})
@@ -3675,7 +3697,7 @@ class ProfiiliIkkuna(QDialog):
 
         self.end_date_edit = QDateEdit()
         self.end_date_edit.setCalendarPopup(True)
-        self.end_date_edit.setDate(QDate.currentDate().addDays(1))
+        self.end_date_edit.setDate(QDate.currentDate())
         self.end_date_edit.dateChanged.connect(self.lataa_data)
 
         # Taulukko
@@ -3755,7 +3777,8 @@ class ProfiiliIkkuna(QDialog):
 
                     self.profiilit.append([
                         nimi, pelit, voitot, prosentti,
-                        keskiaika_str, minuuttipelit, poydan_alla, felo
+                        keskiaika_str, minuuttipelit, poydan_alla, felo,
+                        average_seconds #Lisätään raaka sekuntiarvo, jotta voidaan järjestää oikein ilman muotoilua
                     ])
 
 
@@ -3766,7 +3789,7 @@ class ProfiiliIkkuna(QDialog):
 
                 params = []
 
-                aikavali = f"WHERE {game_date} BETWEEN ? AND ?"
+                aikavali = f"WHERE CAST({game_date} AS DATE) BETWEEN ? AND ?"
 
                 alku = self.start_date_edit.date().toPython()
 
@@ -3921,7 +3944,8 @@ class ProfiiliIkkuna(QDialog):
 
                         nimi, pelit, voitot, prosentti,
 
-                        keskiaika_str, minuuttipelit, poydan_alla, felo
+                        keskiaika_str, minuuttipelit, poydan_alla, felo,
+                        keskiaika_sek  # Lisätään raaka sekuntiarvo, jotta voidaan järjestää oikein ilman muotoilua
 
                     ])
 
@@ -3934,21 +3958,19 @@ class ProfiiliIkkuna(QDialog):
             return
 
     def paivita_taulukko(self):
-        """Taulukon päivitys
-
-        :return:
-        """
+        """Taulukon päivitys"""
         min_pelit = self.min_games_spinbox.value()
 
         # Suodatus vähimmäispelimäärän perusteella
         suodatetut = [r for r in self.profiilit if r[1] >= min_pelit]
 
-        # Järjestä nykyisen sarakkeen ja suunnan mukaan
-        suodatetut.sort(key=lambda x: x[self.sort_column], reverse=self.sort_descending)
+        # Jos järjestetään Keskiaika-sarakkeen (4) mukaan, käytetään sekunteja (indeksi 8)
+        sort_idx = 8 if self.sort_column == 4 else self.sort_column
+        suodatetut.sort(key=lambda x: x[sort_idx], reverse=self.sort_descending)
 
         self.table.setRowCount(len(suodatetut))
         for i, (nimi, pelit, voitot, prosentti, keskiaika_str, minuuttipelit,
-                poydan_alla, felo) in enumerate(suodatetut):
+                poydan_alla, felo, _sek) in enumerate(suodatetut):
             solut = [
                 QTableWidgetItem(nimi),
                 QTableWidgetItem(str(pelit)),
@@ -3965,17 +3987,13 @@ class ProfiiliIkkuna(QDialog):
                 self.table.setItem(i, j, item)
 
     def jarjesta_sarakkeen_mukaan(self, index):
-        """Sarakkeen mukaan järjestely
-
-        :param index:
-        :return:
-        """
-        # Jos sama sarake klikataan uudestaan, vaihda järjestyssuuntaa
+        """Sarakkeen mukaan järjestely"""
         if self.sort_column == index:
             self.sort_descending = not self.sort_descending
         else:
             self.sort_column = index
-            self.sort_descending = True
+            # Nimi (0) ja Keskiaika (4) oletuksena nousevaan järjestykseen, muut laskevaan
+            self.sort_descending = index not in (0, 4)
 
         self.paivita_taulukko()
 
